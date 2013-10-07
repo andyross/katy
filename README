@@ -1,0 +1,62 @@
+Katy[1] is a parallel computing environment aimed at wide CPU SIMD
+implementations like AVX.  (Support for AVX1 exists right now, but the
+integer types and gather instructions from AVX2 are still
+unimplemented.)  It provides a "macro-like" C++ API for expressing
+code that can then be executed directly in the host process via
+function pointer invocation on array data.
+
+The internal code generator is an optimizing compiler, implementing an
+SSA framework to do common subexpression and dead code elimination,
+copy propagation, constant folding, loop hoisting, and a range of
+targetted "factorization" optimizations.
+
+There is also a library implementation of trancendental math
+functions, a triangle rasterization subroutine and a almost-completely
+OpenGL-compatible texture lookup (mip mapping, trilinear filtering and
+anisotropy are all supported!) and framebuffer implementation.  These
+are wired only to a test routine that draw's the author's face into a
+PNM file, but the test works successfully and benchmarks on an Ivy
+Bridge laptop show that an amortized output fragment textured via
+trilinear filtering (i.e. 8 interpolated reads per pixel) can be done
+in just 60 cycles.
+
+The C++ API is, as mentioned, "macro-like".  Commands to emit
+instructions are implemented as overloaded operators on a "vr" class
+which represents a single virtual SIMD register.  The resulting code
+looks in source very much like the intended algorithm, with
+surrounding C++ code providing a macro language for metaprogramming.
+For an example, see the texture code generation.  There is a single
+code generation path for 1-, 2-, and 3-dimensional textures, with a
+compile-time C++ loop over dimensions.
+
+It doesn't do anything "real" yet, though most of the hard work for a
+3D renderer is complete and plumbing out (for example) a Mesa/Gallium
+backend should be possible.
+
+What do I do?!
+==============
+
++ "make" to build, "make test" to run (almost all of) the existing
+   tests.  These can run in either a single-threaded bytecode
+   interpreter or as native code.  On an AVX-capable machine it will
+   run both, but the interpreter is always available (even on other
+   architectures).
+
++ Run one of the test binaries (they all use the same framework) with
+  "--help" to see what can be done.  There is a set of named tests
+  that can be run independently.
+
++ Try a single test --dump-asm to see the generated assembly
+  interleaved with the bytecode intermediate language.  Compare with
+  the C++ source for the test.
+
++ Try --log --no-avx to watch the interpreter run step by step and log
+  its execution.
+
++ Under gdb, run a test with --break to issue a debugger breakpoint
+  instruction (int 3) at the beginning of the generated code.  Then
+  run it and step through it.
+
+[1] The Katy Freeway along Interstate 10 in Houston is the widest
+    automobile highway in the world, with as many as 26 lanes of
+    traffic along some stretches.  The author has never seen it.

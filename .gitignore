@@ -1,0 +1,13 @@
+*.o
+*.d
+*~
+.#*
+\#*#
+*.gc??
+txtest
+vgtest
+mathtest
+mpqtest
+rastertest
+tri1.ppm
+textri.ppm

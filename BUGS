@@ -1,0 +1,60 @@
+1. No "RETURN" functionality.  So the output value in MSK is always
+unchanged by definition.  The code doesn't allow BREAK at top level
+(which would/should work to set a MSK output, but really isn't the
+right solution).
+
+------------------------------------------------------------------------
+
+2. Copy propagation is pretty borked.  I'm seeing this in itermul and a
+few other places, which should be caught by copy propagation but
+isn't:
+  R2    = MOV(R4/IN0) # R2 is unused elsewhere in the code!
+  R37   = MOV(R2)
+
+Ditto here, where R19 is needless:
+  R19   = MOV(R5/IMM0)
+  R34   = MOV(R19)
+
+Likewise, in this situation R27 (again, unused except here) isn't
+required, R37 can take the assignment itself.
+  R27   = FSUB(R37, R8/IMM1)
+  R37   = MOV(R27)
+  R13   = FLE(R27, R5/IMM0)
+
+And yet again here, this sequence at the bottom of itermul assigns the
+same value to four different variables.  Only R33 and R25 are used
+outside this sequence, so R29/R31 should be eliminated.
+  R29   = ANDN(R33, R28)
+{removed}
+  BREAK()
+ELSE()
+  R31   = MOV(R29)
+  R35   = MOV(R31)
+  R33   = MOV(R31)
+FI()
+POOL(R29)
+
+------------------------------------------------------------------------
+
+3. MOV in loops doesn't hoist, even if the RHS is invariant and the
+instruction comes before any BREAKs (i.e. it would always be
+executed).  The reason is that after predication, the code is always
+predicated on MSK, and MSK is variant.  Do a non-SSA hoist upstream
+before predication?  LOAD/STORE has a similar issue: there the MSK
+dependency is explicit, but they could still hoist if the other values
+were invariant (and the instruction came before the first break).
+
+------------------------------------------------------------------------
+
+4. My god the MUX/BLENDPS argument order is a disaster.  How many
+conventions do we have?  There are four registers: a destination, a
+selector, the value placed in the destination if the selector is true,
+and the value if it is false.
+
++ The mux() function looks like ternary:  DST = SEL ?     IF_TRUE : IF_FALSE
++ The MUX bytecode and avxgen API use:    DST,  IF_FALSE, IF_TRUE,  SEL
++ The Intel BLENDVPS spec looks like:     DST,  IF_TRUE,  IF_FALSE, SEL
++ The GNU binutils spits out:             SEL,  IF_TRUE,  IF_FALSE, DST
+
+So the bytecode is just wrong, everything else looks like C, modulo
+whether the desination or selector comes first (and the other last)

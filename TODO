@@ -1,0 +1,167 @@
+========================================================================
+General
+=======
+
+Work on getting coverage to 100%.  Mostly just silly stuff like error
+detection cases now, but would be nice to see a simple zero.
+
+========================================================================
+Vecgen & AVX generation
+=======================
+
+The scratch slot allocator had to be chucked for correctness reasons.
+Rewrite it so it works.  Cache footprint is important.
+
+Likewise the boolean conversion logic is semi-disabled right now
+because it doesn't correctly see "through" MUX/MOV instructions (so
+they conservatively force a conversion to float).
+
+Semi-constant folding in the optimizer.  The big one is a MUX
+instruction where the selector is an immediate (convert to a MOV).
+Likewise boolean ops with one immediate argument are degenerate.
+Arithmetic identities are possible too, like multiplication by one or
+zero, addition or subtraction by zero.
++ Note that (in AVX) FLT with a rhs of immediate zero (or FGT where
+  rhs=0) is a noop operation: just use the sign bit directly.  FLE/FGE
+  can likewise be transformed to an boolean negation, but that only
+  saves the immediate argument fill (though it might allow other
+  optimizations)
+
+Similar: the if/else handling produces chained MUXes of the form:
+   MUX( MUX(orig,fromif,AND(msk0,iftest)), fromelse, ANDN(msk0,iftest) )
+Convert the outer one (inner will be dropped by optimizer) to:
+   MUX( orig, MUX(fromelse,fromif,iftest), msk0)
+
+Synthesize FMA from MUL(ADD(())
+
+Add an operator!() to vr for completeness, even though AVX doesn't
+have a direct operation like that (closest would be XORPS with any
+negative number)
+
+Latency-based reordering of AVX instructions.
++ Remember pipes: add one to instructions that can't issue together
++ Pull across loops
+
+Integer instructions in vecgen API
++ Native on AVX2
++ Use extract/insert to emulate with 128-bit SSE instructions on AVX1.
+  Requires two scratch registers to hold the extracted high halves.
+  Expands into five instructions (extract, extract, op-lo, op-hi,
+  insert).
++ Do type analysis in the vr class to allow for operator overloading?
+  Is strict/unconverting OK?  Note that stored registers are untyped.
+  Seems really hard to get right...
+
+"Assembly" string syntax that can define "inline functions" to be
+loaded at runtime.
++ Implement the trancendental library using this?
+
+Drop RBP usage.  Index scratch registers using RSP.  Or make settable
+now that callbacks can be issued, so as not to wreck the stack frame?
+
+Get load/store scalar instructions using the bottom 8 registers for
+code size (doesn't matter for vector stuff, VEX encoding has no "short
+form")
+
+Implement RETURN (set MSK=0, find and set all saved MSKs)
+
+Better fixup/linking framework for avxgen.
+
+4x64 bit generation
++ Requires a 64 bit and signed 32 bit load/store
+
+32 bit i386 code generation
++ Out of registers, will need push/pop code for load/store/cull
+
+Win64 ABI support
+
+SoA import/export modes
++ input[]/output[]/msk become unaligned poitners to float
++ scalar unpack code gets generated at end of each loop
++ Use export mode with counted-hsoa too
+
+Booelan true/false don't have to be immediates.  Cheaper to generate
+at runtime with xorps(ymm0,ymm0) or cmpps(ymm0,ymm0,EQ).  (But not
+always cheaper: the load can issue in parallel while xor/cmp take an
+ALU port) The CMP requires that ymm0 be a valid float though...
+
+Coalesce the immediates array before avx codegen.  There may be unused
+entries.
+
+Write documentation.  Clean up the public API to get the vecgen
+implementation out of the header.  Clean up typing (int32_t and
+int64_t/size_t where appropriate).
+
+Allow for 64 bit LOADs (truncating) and STOREs (with and without sign
+extension).  Among other things, this would allow setting fields in
+the mems[] array for control over looping, etc...
+
+Improve the CULL inner loop with a vmovmskps instruction and some
+scalar shifts instead of all the 32-bit loads and tests.  Worth it?
+
+The "msk" argument to the generated function is messy and mostly
+useless now that cull is present.  We still need it on input, I guess.
+Maybe add an option to write a VMOVMSK byte somewhere as an output
+instead?
+
+Unify the msk iteration in LOAD/STORE/CULL such that adjacent
+sequences of these instructions can use the same loop (i.e. do the top
+of the loop in the first instruction and the bottom in the last).
+Speeds up complicated memory operations.
+
+Investigate adding a kind of "hard if/break" with an added test
+(i.e. vtestps) of all msk values that does an actual forward jump.
+This can be useful for extra processing that is truly done rarely (the
+original use case was texture border processing: border color clamping
+and wrap-to-adjacent-edge behavior for cube maps), such that it can be
+expected that all 8 threads will be false most of the time.
+
+In avxgen, a MUL by an immediate -1 (i.e. a negation, as in an abs()
+implementation) can become an vxorps of the sign bit.
+
+There are two forward-jump emulation strategies: the current one moves
+MSK to a scratch register and moves it back at the target address, but
+this forces any BREAK instructions that were skipped to fix up the
+enclosing scratch registers with a ANDN (so two instructions plus one
+per enclosing forward jump).  Another trick would be to give each
+target an ID, unconditionally set MSK to 0 and set a global "jump
+target" register at the jump, and check that register vs. the ID at
+the target: if they match, set MSK to true (one vcmpps instruction, so
+equivalent to now).  The advantage is that the BREAKs don't need
+special handling; they're just forward jumps (i.e. 2 instructions).
+This is a wash for typical use, but wins in the case of deeply nested
+breaks/returns.  I don't think it ever hurts. NOTE: one big advantage
+is that this makes RETURN implementation trivial.
+
+Something is generating needless spills in vecgen-avx.  Check the test
+in textest.cpp:main().  Enable aniso, and the codegen goes wacky,
+spilling everything.  The vast majority are verifiably never used
+again.
+
+There is a "musical chairs" optimization issue with the register
+restoration at POOL.  It will emit needless spills and fills instead
+of searching the space for a path that allows it to do the restore
+with MOVs alone (consider the case of swapping two registers when
+there is one free register to work with).  More broadly, it should try
+to detect vr's present in both register sets and unify their physical
+register assignments such that no move is needed (but that algorithm
+strikes me as really complicated...).
+
+The vr API is still a bit broken.  Doing something like
+my_func(vg.input(2)) does the clone thing, passing IN2 by reference to
+the function even though it's declared to take a vr, not a vr&.  So
+the function might try to use the argument as a local variable as in
+C, and end up assigning through the reference to the input value (and,
+in such a case, dying with a code generation error).
+
+========================================================================
+3D Engine
+=========
+
+In texturing, it's common that the same set of texture coordinates are
+used to look up values in multiple textures of the same size
+(e.g. color and bump map).  In those cases, the optimizer could, in
+principle, unify almost all the code.  But the per-mipmap dynamic
+"extents" muck that up, as they are loaded independently for each
+texture and their equality isn't visible to the optimizer.  Come up
+with some way to unify the loading of the extents for such textures.
